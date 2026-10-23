@@ -1,0 +1,21 @@
+name: Process job queue
+
+# Free stand-in for Vercel's paid higher-frequency Cron Jobs (Hobby plan caps
+# at once/day — see vercel.json, which still runs daily as a safety net).
+# GitHub Actions' own scheduler has a practical minimum interval of ~5
+# minutes and isn't guaranteed to fire exactly on time under load, which is
+# fine here: /api/cron/run-due is idempotent and safe to call early/late/twice.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  run-due:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron/run-due
+        run: |
+          curl -sf -X GET "${{ secrets.APP_URL }}/api/cron/run-due" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            --max-time 55

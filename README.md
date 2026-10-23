@@ -68,7 +68,7 @@ job on a schedule (see Deploying).
 - **Job queue**: `jobs` table, `src/db/jobs.ts`. `claimNextJob()` atomically claims the oldest due job (`UPDATE ... WHERE status='queued'` guard, so two processors can never double-process one job); failures retry with exponential backoff up to 3 attempts, then move to `failed`. `src/db/job-runner.ts` dispatches a claimed job to its handler (`scan` → `processScanJob`, `generate_recs` → `processGenerateRecsJob`) — shared by both the standalone worker and the serverless cron route below.
 - **Two ways to process the queue** (same underlying logic, `src/db/scheduler.ts` + `job-runner.ts`):
   - **Standalone worker** (`npm run worker`, `src/worker/index.ts`): polls every 3s, continuously, plus an hourly `node-cron` tick for scheduled brand scans. Needs an always-on process somewhere (not Vercel).
-  - **Serverless cron** (`GET /api/cron/run-due`): on each invocation, enqueues any due weekly/daily scans, then claims and runs jobs for up to ~50s (leaving headroom under the function timeout) before returning. `vercel.json` hits this every 5 minutes via Vercel Cron; protect it with `CRON_SECRET` in production (Vercel sends it automatically as `Authorization: Bearer $CRON_SECRET`). Check your Vercel plan's cron frequency limits — Hobby is more restrictive than Pro — and fall back to an external scheduler (e.g. [cron-job.org](https://cron-job.org), a GitHub Actions scheduled workflow) hitting the same URL with that header if you need tighter intervals than your plan allows.
+  - **Serverless cron** (`GET /api/cron/run-due`): on each invocation, enqueues any due weekly/daily scans, then claims and runs jobs for up to ~50s (leaving headroom under the function timeout) before returning. Protect it with `CRON_SECRET` in production (Vercel sends it automatically as `Authorization: Bearer $CRON_SECRET` to its own Cron Jobs). **Vercel's Hobby plan caps Cron Jobs at once/day** — Pro is required for anything more frequent, which costs real money for no real benefit here. So `vercel.json` only schedules a once-daily run (a safety net, free on Hobby), and `.github/workflows/cron.yml` — a free GitHub Actions scheduled workflow — hits the same endpoint every 5 minutes instead. Set two **GitHub repo secrets** (Settings → Secrets and variables → Actions) for it to work: `APP_URL` (your deployed domain, no trailing slash) and `CRON_SECRET` (same value as in Vercel). The endpoint is idempotent, so it's safe to call from both on overlapping schedules.
 - **24h result cache**: `src/db/cache.ts` backs the engine's `ScanCacheAdapter` with the `scan_results` table itself — an identical (prompt, engine) pair for the same brand within 24h is reused instead of calling the provider again, at zero extra cost.
 - **Budget enforcement**: `src/db/budget.ts` sums this month's `llm_calls.cost_usd` per workspace and caps each scan's estimate against `workspace.monthly_budget_usd` before any calls are made.
 - **Minimal API**:
@@ -376,11 +376,17 @@ worker host needed — `/api/cron/run-due` replaces it.
    `DATABASE_URL=<direct or pooler> npm run db:migrate && npm run db:seed`
    (seed is optional — skip it for a real production workspace).
 3. **Deploy to Vercel**: import this repo, set the environment variables
-   below, and deploy. `vercel.json` already declares the cron job.
+   below, and deploy. `vercel.json` already declares a once-daily cron job
+   (Hobby-plan-safe — see Database + job queue above for why it's only daily).
 4. **Set `CRON_SECRET`** to a random value in Vercel's env vars — Vercel
    automatically sends it as `Authorization: Bearer $CRON_SECRET` to your own
    cron jobs, and `/api/cron/run-due` checks it. Without it, the endpoint has
    no auth, which is fine for testing but not for a public URL long-term.
+   Also add it as a **GitHub Actions secret** (same repo → Settings → Secrets
+   and variables → Actions) named `CRON_SECRET`, plus one named `APP_URL` set
+   to your Vercel domain — `.github/workflows/cron.yml` uses both to hit
+   `/api/cron/run-due` every 5 minutes for free, since Vercel's own Cron Jobs
+   won't do that without a Pro plan.
 5. **Set `AUTH_GOOGLE_ID`/`AUTH_GOOGLE_SECRET`** (a real Google Cloud OAuth
    client) — the "Dev sign-in" credentials provider refuses to issue a
    session once `NODE_ENV=production`, so Google is the only way in without
